@@ -1,0 +1,4 @@
+fastapi
+python-dotenv
+line-bot-sdk
+mangum
