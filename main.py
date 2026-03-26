@@ -14,6 +14,8 @@ from linebot import LineBotApi, WebhookParser
 from linebot.exceptions import InvalidSignatureError, LineBotApiError
 from linebot.models import MessageEvent, TextMessage, TextSendMessage
 
+from kintone import link_line_user_to_kintone
+
 load_dotenv()
 
 logging.basicConfig(level=logging.INFO)
@@ -80,7 +82,7 @@ def handle_message(user_id: str, message_text: str) -> str:
         json.dumps(message_text, ensure_ascii=False),
     )
 
-    return "お名前とフリガナを受け取りました。ありがとうございます。"
+    return link_line_user_to_kintone(user_id, name, furigana)
 
 
 @app.post("/api/callback")
