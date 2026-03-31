@@ -1,13 +1,13 @@
 """
-Kintone REST API: find a record by 名前 + フリガナ, then set lineUID to the LINE user id.
+Kintone REST API: find a record by 名前 + フリガナ, then set the LINE user id on LINEユーザーID.
 
-Field codes are fixed in this module: 名前, フリガナ, lineUID.
+Field codes are fixed in this module: 名前, フリガナ, LINEユーザーID.
 
 Records from GET /k/v1/records.json use SINGLE_LINE_TEXT for 名前 / フリガナ (see sample.json
 from the same API). Values often use full-width space (U+3000) between parts; user input is
 normalized the same way before querying.
 
-If the lineUID field does not exist on the app yet, it is created (1行テキスト) via
+If the LINEユーザーID field does not exist on the app yet, it is created (1行テキスト) via
 preview form API + deploy. That requires the API token to have **アプリ管理** (manage app),
 not only record permissions. See:
 https://kintone.dev/en/docs/kintone/rest-api/apps/add-form-fields
@@ -19,11 +19,13 @@ import logging
 import os
 import re
 import sys
+from dotenv import load_dotenv
 from typing import Any, Dict, Optional, Tuple
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 import requests
 
+load_dotenv()
 logger = logging.getLogger(__name__)
 
 # Ensure INFO logs go to stdout on Vercel when this module is imported before main configures logging.
@@ -42,10 +44,10 @@ _SESSION.headers.update({"User-Agent": "linebot-kintone/1.0"})
 # Kintone フィールドコード（固定）
 FIELD_NAME = "名前"
 FIELD_FURIGANA = "フリガナ"
-FIELD_LINE_UID = "lineUID"
+FIELD_LINE_USER_ID = "LINEユーザーID"
 
 # After first successful check or create, skip GET on each request (per serverless instance).
-_line_uid_field_ready: Optional[bool] = None
+_line_user_id_field_ready: Optional[bool] = None
 
 
 def _base_url() -> Optional[str]:
@@ -94,10 +96,35 @@ def _build_query(name: str, furigana: str) -> str:
 
 
 def _headers() -> Dict[str, str]:
+    """POST/PUT with JSON body."""
     return {
         "X-Cybozu-API-Token": _api_token() or "",
         "Content-Type": "application/json",
     }
+
+
+def _headers_get() -> Dict[str, str]:
+    """GET requests: API token only (no Content-Type — matches Postman; some proxies mishandle GET + JSON Content-Type)."""
+    return {
+        "X-Cybozu-API-Token": _api_token() or "",
+    }
+
+
+def _build_records_get_url(base: str, app_id: str, query: str) -> str:
+    """
+    Build the same GET URL shape as Postman: app, totalCount, then query.
+    Use quote_via=quote so spaces become %20 (not +), which matches browser/Postman exports for Kintone.
+    """
+    qs = urlencode(
+        [
+            ("app", str(app_id)),
+            ("totalCount", "true"),
+            ("query", query),
+        ],
+        quote_via=quote,
+        safe="",
+    )
+    return f"{base}/k/v1/records.json?{qs}"
 
 
 def _app_id_int() -> int:
@@ -114,7 +141,7 @@ def _get_form_field_codes() -> Optional[Dict[str, Any]]:
     url = f"{base}/k/v1/app/form/fields.json?{urlencode({'app': app_id})}"
     logger.info("Kintone API -> GET /k/v1/app/form/fields.json app=%s", app_id)
     try:
-        r = _SESSION.get(url, headers=_headers(), timeout=30)
+        r = _SESSION.get(url, headers=_headers_get(), timeout=30)
     except requests.RequestException as e:
         logger.exception("Kintone GET form fields failed: %s", e)
         return None
@@ -134,13 +161,13 @@ def _get_form_field_codes() -> Optional[Dict[str, Any]]:
     return data.get("properties") or {}
 
 
-def ensure_line_uid_field_exists() -> bool:
+def ensure_line_user_id_field_exists() -> bool:
     """
-    If lineUID is not on the app form, add it (SINGLE_LINE_TEXT) and deploy preview → live.
+    If LINEユーザーID is not on the app form, add it (SINGLE_LINE_TEXT) and deploy preview → live.
     Requires API token with app management permission for add+deploy.
     """
-    global _line_uid_field_ready
-    if _line_uid_field_ready:
+    global _line_user_id_field_ready
+    if _line_user_id_field_ready:
         return True
     if not _kintone_configured():
         return False
@@ -148,9 +175,9 @@ def ensure_line_uid_field_exists() -> bool:
     props = _get_form_field_codes()
     if props is None:
         return False
-    if FIELD_LINE_UID in props:
-        logger.info("Kintone: field %s already exists on app", FIELD_LINE_UID)
-        _line_uid_field_ready = True
+    if FIELD_LINE_USER_ID in props:
+        logger.info("Kintone: field %s already exists on app", FIELD_LINE_USER_ID)
+        _line_user_id_field_ready = True
         return True
 
     base = _base_url()
@@ -159,14 +186,14 @@ def ensure_line_uid_field_exists() -> bool:
     logger.info(
         "Kintone API -> POST /k/v1/preview/app/form/fields.json app=%s field=%s",
         app_int,
-        FIELD_LINE_UID,
+        FIELD_LINE_USER_ID,
     )
     add_body: Dict[str, Any] = {
         "app": app_int,
         "properties": {
-            FIELD_LINE_UID: {
+            FIELD_LINE_USER_ID: {
                 "type": "SINGLE_LINE_TEXT",
-                "code": FIELD_LINE_UID,
+                "code": FIELD_LINE_USER_ID,
                 "label": "LINEユーザーID",
                 "noLabel": False,
                 "required": False,
@@ -212,8 +239,8 @@ def ensure_line_uid_field_exists() -> bool:
         )
         return False
 
-    logger.info("Kintone: added field %s and deployed app settings", FIELD_LINE_UID)
-    _line_uid_field_ready = True
+    logger.info("Kintone: added field %s and deployed app settings", FIELD_LINE_USER_ID)
+    _line_user_id_field_ready = True
     return True
 
 
@@ -232,26 +259,26 @@ def find_record_by_name_furigana(
     base = _base_url()
     app_id = _app_id()
     query = _build_query(name, furigana)
-    params = {
-        "app": app_id,
-        "query": query,
-        "totalCount": "true",
-    }
-    url = f"{base}/k/v1/records.json?{urlencode(params)}"
+    url = _build_records_get_url(base, app_id or "", query)
     logger.info(
-        "Kintone API -> GET /k/v1/records.json app=%s name_len=%s furigana_len=%s",
+        "Kintone API -> GET /k/v1/records.json app=%s fields=[%s,%s] query=%s",
         app_id,
-        len(name),
-        len(furigana),
+        FIELD_NAME,
+        FIELD_FURIGANA,
+        query,
     )
 
     try:
-        r = _SESSION.get(url, headers=_headers(), timeout=30)
+        r = _SESSION.get(url, headers=_headers_get(), timeout=30)
     except requests.RequestException as e:
         logger.exception("Kintone GET records request failed: %s", e)
         return None, None
 
-    logger.info("Kintone API <- GET /k/v1/records.json HTTP %s", r.status_code)
+    logger.info(
+        "Kintone API <- GET /k/v1/records.json HTTP %s url=%s",
+        r.status_code,
+        r.url,
+    )
     if r.status_code != 200:
         logger.error(
             "Kintone GET records failed: status=%s body=%s",
@@ -297,13 +324,13 @@ def find_record_by_name_furigana(
 
 
 def update_record_line_uid(record_id: str, line_user_id: str) -> bool:
-    """PUT /k/v1/record.json — set single-line text field lineUID."""
+    """PUT /k/v1/record.json — set single-line text field LINEユーザーID."""
     if not _kintone_configured():
         return False
 
     base = _base_url()
     app_id = _app_id()
-    field = FIELD_LINE_UID
+    field = FIELD_LINE_USER_ID
 
     try:
         rid = int(record_id)
@@ -341,7 +368,12 @@ def update_record_line_uid(record_id: str, line_user_id: str) -> bool:
         )
         return False
 
-    logger.info("Kintone: updated record id=%s with %s=%s", rid, field, line_user_id)
+    logger.info(
+        "Kintone: updated record $id=%s field[%s]=%r",
+        rid,
+        field,
+        line_user_id,
+    )
     return True
 
 
@@ -351,7 +383,7 @@ def link_line_user_to_kintone(
     furigana: Optional[str],
 ) -> Optional[str]:
     """
-    Find record by name + furigana, write LINE user id to lineUID field.
+    Find record by name + furigana, write LINE user id to LINEユーザーID field.
     Returns a short Japanese message for the LINE reply, or None if name/furigana missing.
     """
     if not name or not furigana:
@@ -363,10 +395,10 @@ def link_line_user_to_kintone(
         return None
 
     logger.info(
-        "link_line_user: start line_user_id=%s normalized name_len=%s furigana_len=%s",
+        "link_line_user: start line_user_id=%s 名前=%r フリガナ=%r",
         line_user_id,
-        len(name),
-        len(furigana),
+        name,
+        furigana,
     )
 
     if not _kintone_configured():
@@ -382,20 +414,32 @@ def link_line_user_to_kintone(
             logger.info("link_line_user: find record failed (API error)")
             return "Kintoneの検索に失敗しました。しばらくしてからお試しください。"
         if total == 0:
-            logger.info("link_line_user: no Kintone row matched name+furigana")
+            logger.info(
+                "link_line_user: no Kintone row matched 名前=%r フリガナ=%r",
+                name,
+                furigana,
+            )
             return (
                 "Kintoneに一致する名前・フリガナが見つかりませんでした。"
                 "入力内容をご確認ください。"
             )
-        logger.info("link_line_user: find record unexpected state total=%s", total)
+        logger.info(
+            "link_line_user: find record unexpected state total=%s 名前=%r フリガナ=%r",
+            total,
+            name,
+            furigana,
+        )
         return "Kintoneの検索に失敗しました。しばらくしてからお試しください。"
 
-    logger.info("link_line_user: ensure lineUID field exists record_id=%s", record_id)
-    if not ensure_line_uid_field_exists():
+    logger.info(
+        "link_line_user: ensure LINEユーザーID field exists record_id=%s",
+        record_id,
+    )
+    if not ensure_line_user_id_field_exists():
         return (
             "Kintoneに「LINEユーザーID」フィールドを追加できませんでした。"
             "APIトークンにアプリ管理権限があるか、管理者にフォームに1行テキスト"
-            f"（フィールドコード「{FIELD_LINE_UID}」）を追加してもらってください。"
+            f"（フィールドコード「{FIELD_LINE_USER_ID}」）を追加してもらってください。"
         )
 
     if update_record_line_uid(record_id, line_user_id):

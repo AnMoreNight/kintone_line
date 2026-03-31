@@ -84,7 +84,7 @@ def handle_message(user_id: str, message_text: str) -> Optional[str]:
         return None
 
     logger.info(
-        "registration_fields user_id=%s name=%s furigana=%s raw=%s",
+        "registration_fields user_id=%s 名前=%s フリガナ=%s raw_message=%s",
         user_id,
         json.dumps(name, ensure_ascii=False),
         json.dumps(furigana, ensure_ascii=False),
@@ -112,7 +112,7 @@ async def callback(
 
     body = await request.body()
     body_str = body.decode("utf-8")
-    logger.info("Webhook: body length=%s bytes", len(body))
+    logger.info("Webhook: raw body size=%s bytes (LINE webhook JSON)", len(body))
 
     try:
         events = parser.parse(body_str, x_line_signature)
@@ -132,19 +132,19 @@ async def callback(
         user_id = event.source.user_id
         message_text = event.message.text.strip()
         logger.info(
-            "Webhook: event[%s] text user_id=%s text_len=%s",
+            "Webhook: event[%s] user_id=%s message_text=%r",
             i,
             user_id,
-            len(message_text),
+            message_text,
         )
         reply_text = handle_message(user_id, message_text)
         if reply_text is None:
             logger.info("Webhook: event[%s] no reply (name/furigana not parsed)", i)
             continue
         logger.info(
-            "Webhook: event[%s] LINE reply_message (reply_len=%s)",
+            "Webhook: event[%s] LINE reply_message reply_text=%r",
             i,
-            len(reply_text),
+            reply_text,
         )
         try:
             line_bot_api.reply_message(
