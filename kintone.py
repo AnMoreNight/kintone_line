@@ -3,6 +3,10 @@ Kintone REST API: find a record by 名前 + フリガナ, then set lineUID to th
 
 Field codes are fixed in this module: 名前, フリガナ, lineUID.
 
+Records from GET /k/v1/records.json use SINGLE_LINE_TEXT for 名前 / フリガナ (see sample.json
+from the same API). Values often use full-width space (U+3000) between parts; user input is
+normalized the same way before querying.
+
 If the lineUID field does not exist on the app yet, it is created (1行テキスト) via
 preview form API + deploy. That requires the API token to have **アプリ管理** (manage app),
 not only record permissions. See:
@@ -13,6 +17,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from typing import Any, Dict, Optional, Tuple
 from urllib.parse import urlencode
 
@@ -51,6 +56,17 @@ def _api_token() -> Optional[str]:
 
 def _kintone_configured() -> bool:
     return bool(_base_url() and _app_id() and _api_token())
+
+
+def normalize_kintone_field_value(value: str) -> str:
+    """
+    Match how 名前 / フリガナ are stored in app 6 (sample records): strip, then collapse
+    any run of whitespace (half/full) to a single ideographic space (　).
+    """
+    s = value.strip()
+    if not s:
+        return s
+    return re.sub(r"\s+", "\u3000", s)
 
 
 def _escape_query_string(value: str) -> str:
@@ -294,13 +310,18 @@ def link_line_user_to_kintone(
     line_user_id: str,
     name: Optional[str],
     furigana: Optional[str],
-) -> str:
+) -> Optional[str]:
     """
     Find record by name + furigana, write LINE user id to lineUID field.
-    Returns a short Japanese message for the LINE reply.
+    Returns a short Japanese message for the LINE reply, or None if name/furigana missing.
     """
     if not name or not furigana:
-        return "名前・フリガナの形式を確認してください。（例：名前:山田 改行 フリガナ:ヤマダ）"
+        return None
+
+    name = normalize_kintone_field_value(name)
+    furigana = normalize_kintone_field_value(furigana)
+    if not name or not furigana:
+        return None
 
     if not _kintone_configured():
         logger.error("Kintone is not configured; skipping link.")

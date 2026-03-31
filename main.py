@@ -21,11 +21,6 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-DEFAULT_REPLY = (
-    "名前とフリガナの両方を含むメッセージを送ってください。"
-    "（例：名前 : 山田 / フリガナ : ヤマダ）"
-)
-
 _NAME_RE = re.compile(r"名前\s*[:：]\s*([^\n]+)")
 _FURIGANA_RE = re.compile(r"フリガナ\s*[:：]\s*([^\n]+)")
 
@@ -69,11 +64,16 @@ def extract_name_furigana(text: str) -> Tuple[Optional[str], Optional[str]]:
     return name, furigana
 
 
-def handle_message(user_id: str, message_text: str) -> str:
-    if "名前" not in message_text or "フリガナ" not in message_text:
-        return DEFAULT_REPLY
-
+def handle_message(user_id: str, message_text: str) -> Optional[str]:
+    """Returns reply text, or None to skip replying (no default prompt)."""
     name, furigana = extract_name_furigana(message_text)
+    if not name or not furigana:
+        return None
+    name = name.strip()
+    furigana = furigana.strip()
+    if not name or not furigana:
+        return None
+
     logger.info(
         "registration_fields user_id=%s name=%s furigana=%s raw=%s",
         user_id,
@@ -118,6 +118,8 @@ async def callback(
         user_id = event.source.user_id
         message_text = event.message.text.strip()
         reply_text = handle_message(user_id, message_text)
+        if reply_text is None:
+            continue
         try:
             line_bot_api.reply_message(
                 event.reply_token,
