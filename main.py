@@ -3,6 +3,7 @@ LINE webhook (FastAPI). Entry point for Vercel: `app` at project root (see Verce
 """
 import os
 import re
+import sys
 import json
 import logging
 from typing import Optional, Tuple
@@ -18,7 +19,14 @@ from kintone import link_line_user_to_kintone
 
 load_dotenv()
 
-logging.basicConfig(level=logging.INFO)
+# Vercel Functions stream stdout/stderr to Project → Logs; force INFO + readable format.
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%Y-%m-%dT%H:%M:%S",
+    stream=sys.stdout,
+    force=True,
+)
 logger = logging.getLogger(__name__)
 
 _NAME_RE = re.compile(r"名前\s*[:：]\s*([^\n]+)")
@@ -53,6 +61,7 @@ app = FastAPI()
 
 @app.get("/")
 async def health_check():
+    logger.info("GET / health_check")
     return {"status": "ok"}
 
 
@@ -90,45 +99,64 @@ async def callback(
     request: Request,
     x_line_signature: Optional[str] = Header(None, alias="X-Line-Signature"),
 ):
+    logger.info("POST /api/callback: webhook received")
     line_bot_api, parser = _get_line_clients()
     if not line_bot_api or not parser:
         # Acknowledge webhook so LINE does not endlessly retry; fix env vars to get replies.
-        logger.error("Webhook received but LINE credentials are not configured.")
+        logger.error("Webhook: LINE credentials missing — returning 200 without reply")
         return JSONResponse(content={"status": "ignored", "reason": "missing_line_env"})
 
     if not x_line_signature:
-        logger.warning("Missing X-Line-Signature header")
+        logger.warning("Webhook: missing X-Line-Signature header")
         raise HTTPException(status_code=400, detail={"error": "Missing signature"})
 
     body = await request.body()
     body_str = body.decode("utf-8")
+    logger.info("Webhook: body length=%s bytes", len(body))
 
     try:
         events = parser.parse(body_str, x_line_signature)
     except InvalidSignatureError as e:
-        logger.error("Invalid signature: %s", e)
+        logger.error("Webhook: invalid signature (%s)", e)
         raise HTTPException(status_code=400, detail={"error": "Invalid signature"})
     except Exception as e:
-        logger.exception("Parsing error: %s", e)
+        logger.exception("Webhook: parse error: %s", e)
         raise HTTPException(status_code=400, detail={"error": "Invalid request body"})
 
-    for event in events:
+    logger.info("Webhook: parsed OK, event count=%s", len(events))
+
+    for i, event in enumerate(events):
         if not isinstance(event, MessageEvent) or not isinstance(event.message, TextMessage):
+            logger.info("Webhook: event[%s] skipped (not text message)", i)
             continue
         user_id = event.source.user_id
         message_text = event.message.text.strip()
+        logger.info(
+            "Webhook: event[%s] text user_id=%s text_len=%s",
+            i,
+            user_id,
+            len(message_text),
+        )
         reply_text = handle_message(user_id, message_text)
         if reply_text is None:
+            logger.info("Webhook: event[%s] no reply (name/furigana not parsed)", i)
             continue
+        logger.info(
+            "Webhook: event[%s] LINE reply_message (reply_len=%s)",
+            i,
+            len(reply_text),
+        )
         try:
             line_bot_api.reply_message(
                 event.reply_token,
                 TextSendMessage(text=reply_text),
             )
+            logger.info("Webhook: event[%s] LINE API reply_message OK", i)
         except LineBotApiError as e:
             # Expired reply_token, invalid token, etc. — log and continue; still return 200.
-            logger.exception("LINE reply_message failed: %s", e)
+            logger.exception("Webhook: event[%s] LINE reply_message failed: %s", i, e)
 
+    logger.info("POST /api/callback: done, returning 200")
     return JSONResponse(content={"status": "ok"})
 
 

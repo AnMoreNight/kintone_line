@@ -18,12 +18,23 @@ from __future__ import annotations
 import logging
 import os
 import re
+import sys
 from typing import Any, Dict, Optional, Tuple
 from urllib.parse import urlencode
 
 import requests
 
 logger = logging.getLogger(__name__)
+
+# Ensure INFO logs go to stdout on Vercel when this module is imported before main configures logging.
+if not logging.root.handlers:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%Y-%m-%dT%H:%M:%S",
+        stream=sys.stdout,
+        force=True,
+    )
 
 _SESSION = requests.Session()
 _SESSION.headers.update({"User-Agent": "linebot-kintone/1.0"})
@@ -101,11 +112,13 @@ def _get_form_field_codes() -> Optional[Dict[str, Any]]:
     base = _base_url()
     app_id = _app_id()
     url = f"{base}/k/v1/app/form/fields.json?{urlencode({'app': app_id})}"
+    logger.info("Kintone API -> GET /k/v1/app/form/fields.json app=%s", app_id)
     try:
         r = _SESSION.get(url, headers=_headers(), timeout=30)
     except requests.RequestException as e:
         logger.exception("Kintone GET form fields failed: %s", e)
         return None
+    logger.info("Kintone API <- GET /k/v1/app/form/fields.json HTTP %s", r.status_code)
     if r.status_code != 200:
         logger.error(
             "Kintone GET form fields: status=%s body=%s",
@@ -143,6 +156,11 @@ def ensure_line_uid_field_exists() -> bool:
     base = _base_url()
     app_int = _app_id_int()
     add_url = f"{base}/k/v1/preview/app/form/fields.json"
+    logger.info(
+        "Kintone API -> POST /k/v1/preview/app/form/fields.json app=%s field=%s",
+        app_int,
+        FIELD_LINE_UID,
+    )
     add_body: Dict[str, Any] = {
         "app": app_int,
         "properties": {
@@ -161,6 +179,7 @@ def ensure_line_uid_field_exists() -> bool:
     except requests.RequestException as e:
         logger.exception("Kintone add form field failed: %s", e)
         return False
+    logger.info("Kintone API <- POST /k/v1/preview/app/form/fields.json HTTP %s", r.status_code)
     if r.status_code != 200:
         logger.error(
             "Kintone POST preview add fields failed: status=%s body=%s",
@@ -170,6 +189,7 @@ def ensure_line_uid_field_exists() -> bool:
         return False
 
     deploy_url = f"{base}/k/v1/preview/app/deploy.json"
+    logger.info("Kintone API -> POST /k/v1/preview/app/deploy.json app=%s", app_int)
     deploy_body = {
         "apps": [
             {
@@ -183,6 +203,7 @@ def ensure_line_uid_field_exists() -> bool:
     except requests.RequestException as e:
         logger.exception("Kintone deploy app settings failed: %s", e)
         return False
+    logger.info("Kintone API <- POST /k/v1/preview/app/deploy.json HTTP %s", r2.status_code)
     if r2.status_code != 200:
         logger.error(
             "Kintone deploy failed: status=%s body=%s",
@@ -217,6 +238,12 @@ def find_record_by_name_furigana(
         "totalCount": "true",
     }
     url = f"{base}/k/v1/records.json?{urlencode(params)}"
+    logger.info(
+        "Kintone API -> GET /k/v1/records.json app=%s name_len=%s furigana_len=%s",
+        app_id,
+        len(name),
+        len(furigana),
+    )
 
     try:
         r = _SESSION.get(url, headers=_headers(), timeout=30)
@@ -224,6 +251,7 @@ def find_record_by_name_furigana(
         logger.exception("Kintone GET records request failed: %s", e)
         return None, None
 
+    logger.info("Kintone API <- GET /k/v1/records.json HTTP %s", r.status_code)
     if r.status_code != 200:
         logger.error(
             "Kintone GET records failed: status=%s body=%s",
@@ -246,7 +274,10 @@ def find_record_by_name_furigana(
         total_int = len(records)
 
     if not records:
-        logger.info("Kintone: no record for name/furigana query (totalCount=%s)", total)
+        logger.info(
+            "Kintone: no matching record (totalCount=%s, records_returned=0)",
+            total,
+        )
         return None, total_int
 
     if total_int > 1:
@@ -261,6 +292,7 @@ def find_record_by_name_furigana(
         logger.error("Kintone: first record missing $id: %s", records[0])
         return None, total_int
 
+    logger.info("Kintone: found record $id=%s (totalCount=%s)", rid, total_int)
     return str(rid), total_int
 
 
@@ -288,12 +320,19 @@ def update_record_line_uid(record_id: str, line_user_id: str) -> bool:
     }
 
     url = f"{base}/k/v1/record.json"
+    logger.info(
+        "Kintone API -> PUT /k/v1/record.json app=%s id=%s field=%s",
+        app_id,
+        rid,
+        field,
+    )
     try:
         r = _SESSION.put(url, headers=_headers(), json=body, timeout=30)
     except requests.RequestException as e:
         logger.exception("Kintone PUT record failed: %s", e)
         return False
 
+    logger.info("Kintone API <- PUT /k/v1/record.json HTTP %s", r.status_code)
     if r.status_code != 200:
         logger.error(
             "Kintone PUT record failed: status=%s body=%s",
@@ -323,8 +362,15 @@ def link_line_user_to_kintone(
     if not name or not furigana:
         return None
 
+    logger.info(
+        "link_line_user: start line_user_id=%s normalized name_len=%s furigana_len=%s",
+        line_user_id,
+        len(name),
+        len(furigana),
+    )
+
     if not _kintone_configured():
-        logger.error("Kintone is not configured; skipping link.")
+        logger.error("link_line_user: Kintone env not set; skipping link")
         return (
             "お名前とフリガナを受け取りました。"
             "（Kintone連携の設定が完了していないため、登録はスキップされました。）"
@@ -333,14 +379,18 @@ def link_line_user_to_kintone(
     record_id, total = find_record_by_name_furigana(name, furigana)
     if record_id is None:
         if total is None:
+            logger.info("link_line_user: find record failed (API error)")
             return "Kintoneの検索に失敗しました。しばらくしてからお試しください。"
         if total == 0:
+            logger.info("link_line_user: no Kintone row matched name+furigana")
             return (
                 "Kintoneに一致する名前・フリガナが見つかりませんでした。"
                 "入力内容をご確認ください。"
             )
+        logger.info("link_line_user: find record unexpected state total=%s", total)
         return "Kintoneの検索に失敗しました。しばらくしてからお試しください。"
 
+    logger.info("link_line_user: ensure lineUID field exists record_id=%s", record_id)
     if not ensure_line_uid_field_exists():
         return (
             "Kintoneに「LINEユーザーID」フィールドを追加できませんでした。"
@@ -349,6 +399,8 @@ def link_line_user_to_kintone(
         )
 
     if update_record_line_uid(record_id, line_user_id):
+        logger.info("link_line_user: success record_id=%s", record_id)
         return "KintoneにLINE IDを登録しました。ありがとうございます。"
 
+    logger.info("link_line_user: PUT record failed record_id=%s", record_id)
     return "Kintoneの更新に失敗しました。しばらくしてからお試しください。"
